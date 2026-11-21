@@ -1,0 +1,160 @@
+### starting moto server (the mock cloud) on port 5555
+
+===================================================================
+PART 1 — idle-remediation (happy path)
+===================================================================
+seeded: 2 orphan volumes, 1 protected volume, 1 attached volume, 1 idle + 1 active instance
+run demo-idle: planning idle-remediation ...
+
+=== APPROVAL REQUEST — run demo-idle (idle-remediation) ===
+Plan (dry-run — nothing has mutated yet):
+  1. [delete_volume] Delete unattached volume orphan-data (vol-77e62eba9e266651e, 20 GiB gp3)
+  2. [delete_volume] Delete unattached volume orphan-scratch (vol-e25e291c22bb46805, 8 GiB gp2)
+  3. [stop_instance] Stop idle instance batch-worker (i-8704ed43812ade319)
+Findings (inspected, deliberately untouched):
+  - volume api-data (vol-63a3ddbf5e69ea96f): attached to ['i-68e275f49118ebb8c'] — left alone
+  - volume protected-archive (vol-919a121f68cc40a1a): unattached but tagged protected=true — left alone
+  - volume root volume of i-8704ed43812ade319 (vol-9e6d31ec96b6a899a): attached to ['i-8704ed43812ade319'] — left alone
+  - volume root volume of i-68e275f49118ebb8c (vol-b74a418f9fa010cf8): attached to ['i-68e275f49118ebb8c'] — left alone
+  - instance api-server (i-68e275f49118ebb8c): state=running idle=false — left alone
+
+--auto-approve given (scripted demo only): approving plan
+
+run status: completed
+
+--- audit log (demo-idle) ---
+2026-11-21T02:42:49Z | run=demo-idle | actor=blastradius-agent | event=plan_created | result=ok | detail=3 step(s), 5 finding(s) under policy BlastRadius-IdleRemediation
+2026-11-21T02:42:49Z | run=demo-idle | actor=blastradius-agent | event=approval_granted | approved_by=operator via --auto-approve (DEMO ONLY) | result=ok | detail=plan of 3 step(s)
+2026-11-21T02:42:49Z | run=demo-idle | actor=blastradius-agent | event=step_started | action=delete_volume | resource=vol-77e62eba9e266651e | approved_by=operator via --auto-approve (DEMO ONLY) | result=ok | detail=step s1/3: Delete unattached volume orphan-data (vol-77e62eba9e266651e, 20 GiB gp3)
+2026-11-21T02:42:49Z | run=demo-idle | actor=blastradius-agent | event=policy_decision | action=ec2:DeleteVolume | resource=vol-77e62eba9e266651e | approved_by=operator via --auto-approve (DEMO ONLY) | result=allow | detail=allowed by statement 'DeleteUnprotectedVolumesOnly'
+2026-11-21T02:42:49Z | run=demo-idle | actor=blastradius-agent | event=step_applied | action=delete_volume | resource=vol-77e62eba9e266651e | approved_by=operator via --auto-approve (DEMO ONLY) | result=ok | detail=volume vol-77e62eba9e266651e deleted (20 GiB gp3)
+2026-11-21T02:42:49Z | run=demo-idle | actor=blastradius-agent | event=step_started | action=delete_volume | resource=vol-e25e291c22bb46805 | approved_by=operator via --auto-approve (DEMO ONLY) | result=ok | detail=step s2/3: Delete unattached volume orphan-scratch (vol-e25e291c22bb46805, 8 GiB gp2)
+2026-11-21T02:42:50Z | run=demo-idle | actor=blastradius-agent | event=policy_decision | action=ec2:DeleteVolume | resource=vol-e25e291c22bb46805 | approved_by=operator via --auto-approve (DEMO ONLY) | result=allow | detail=allowed by statement 'DeleteUnprotectedVolumesOnly'
+2026-11-21T02:42:50Z | run=demo-idle | actor=blastradius-agent | event=step_applied | action=delete_volume | resource=vol-e25e291c22bb46805 | approved_by=operator via --auto-approve (DEMO ONLY) | result=ok | detail=volume vol-e25e291c22bb46805 deleted (8 GiB gp2)
+2026-11-21T02:42:50Z | run=demo-idle | actor=blastradius-agent | event=step_started | action=stop_instance | resource=i-8704ed43812ade319 | approved_by=operator via --auto-approve (DEMO ONLY) | result=ok | detail=step s3/3: Stop idle instance batch-worker (i-8704ed43812ade319)
+2026-11-21T02:42:50Z | run=demo-idle | actor=blastradius-agent | event=policy_decision | action=ec2:StopInstances | resource=i-8704ed43812ade319 | approved_by=operator via --auto-approve (DEMO ONLY) | result=allow | detail=allowed by statement 'StopInstancesOnlyWhenTaggedIdle'
+2026-11-21T02:42:50Z | run=demo-idle | actor=blastradius-agent | event=step_applied | action=stop_instance | resource=i-8704ed43812ade319 | approved_by=operator via --auto-approve (DEMO ONLY) | result=ok | detail=instance i-8704ed43812ade319: running -> stopped
+2026-11-21T02:42:50Z | run=demo-idle | actor=blastradius-agent | event=verify_check | result=pass | detail=no unattached unprotected volumes remain: expected 0, actual 0
+2026-11-21T02:42:50Z | run=demo-idle | actor=blastradius-agent | event=verify_check | result=pass | detail=protected volume still exists: expected present, actual present
+2026-11-21T02:42:50Z | run=demo-idle | actor=blastradius-agent | event=verify_check | result=pass | detail=idle instance batch-worker is stopped: expected stopped, actual stopped
+2026-11-21T02:42:50Z | run=demo-idle | actor=blastradius-agent | event=verify_check | result=pass | detail=active instance api-server is still running: expected running, actual running
+2026-11-21T02:42:50Z | run=demo-idle | actor=blastradius-agent | event=verify_passed | result=ok | detail=4/4 checks passed
+2026-11-21T02:42:50Z | run=demo-idle | actor=blastradius-agent | event=run_finished | approved_by=operator via --auto-approve (DEMO ONLY) | result=completed | detail=3 step(s) executed
+
+### resetting the mock cloud
+
+===================================================================
+PART 2 — failed-deployment: kill -9 mid-run, resume, rollback
+===================================================================
+--- initial cloud state ---
+  instance checkout-api-1: state=running version=2.0 health=healthy
+  instance checkout-api-2: state=stopped version=1.0 health=unknown
+  instance checkout-api-3: state=running version=2.0 health=failed
+  volume vol-37eede529fd9d5ef7: state=in-use 8GiB gp2 protected=None attached=['i-46135e79abcb119de']
+  volume vol-8dab92e0aca4a7168: state=in-use 8GiB gp2 protected=None attached=['i-76c0230ba6c336a20']
+  volume vol-c4be8521f66161db0: state=in-use 8GiB gp2 protected=None attached=['i-026b86762912e63de']
+
+### starting the agent in the background (3s delay before each mutation)
+### two steps are durably checkpointed. Killing the agent: kill -9 18278
+--- what the agent printed before it died ---
+run demo-crash: planning failed-deployment ...
+
+=== APPROVAL REQUEST — run demo-crash (failed-deployment) ===
+Plan (dry-run — nothing has mutated yet):
+  1. [start_instance] Start instance checkout-api-2 (i-026b86762912e63de)
+  2. [set_tags] Set version tag on checkout-api-2 (i-026b86762912e63de) to 2.0
+  3. [health_check] Health gate for checkout-api-2 (i-026b86762912e63de): clear health to 'healthy' only if no persistent fault is present
+  4. [stop_instance] Stop unhealthy instance checkout-api-3 (i-76c0230ba6c336a20) for restart
+  5. [start_instance] Start instance checkout-api-3 (i-76c0230ba6c336a20)
+  6. [health_check] Health gate for checkout-api-3 (i-76c0230ba6c336a20): clear health to 'healthy' only if no persistent fault is present
+Findings (inspected, deliberately untouched):
+  - instance checkout-api-1 (i-46135e79abcb119de): already at target state — left alone
+
+--auto-approve given (scripted demo only): approving plan
+--- cloud state at the moment of the crash (node-2 fixed, node-3 untouched) ---
+  instance checkout-api-1: state=running version=2.0 health=healthy
+  instance checkout-api-2: state=running version=2.0 health=unknown
+  instance checkout-api-3: state=running version=2.0 health=failed
+  volume vol-37eede529fd9d5ef7: state=in-use 8GiB gp2 protected=None attached=['i-46135e79abcb119de']
+  volume vol-8dab92e0aca4a7168: state=in-use 8GiB gp2 protected=None attached=['i-76c0230ba6c336a20']
+  volume vol-c4be8521f66161db0: state=in-use 8GiB gp2 protected=None attached=['i-026b86762912e63de']
+--- checkpoint state a fresh process would see ---
+{
+  "run_id": "demo-crash",
+  "scenario": "failed-deployment",
+  "status": "executing",
+  "step_index": 2,
+  "plan_steps": 6,
+  "approved": true,
+  "approved_by": "operator via --auto-approve (DEMO ONLY)",
+  "verify_passed": null,
+  "next_nodes": [
+    "execute"
+  ]
+}
+
+### resuming with a fresh process (no step delay)
+run demo-crash: resuming from checkpoint (step_index=2) ...
+
+run status: rolled_back
+verification or a step failed; all executed steps were rolled back
+
+--- final cloud state ---
+  instance checkout-api-1: state=running version=2.0 health=healthy
+  instance checkout-api-2: state=stopped version=1.0 health=unknown
+  instance checkout-api-3: state=running version=2.0 health=failed
+  volume vol-37eede529fd9d5ef7: state=in-use 8GiB gp2 protected=None attached=['i-46135e79abcb119de']
+  volume vol-8dab92e0aca4a7168: state=in-use 8GiB gp2 protected=None attached=['i-76c0230ba6c336a20']
+  volume vol-c4be8521f66161db0: state=in-use 8GiB gp2 protected=None attached=['i-026b86762912e63de']
+--- proof: initial vs final snapshot ---
+snapshots are IDENTICAL
+
+--- full audit log (demo-crash): plan, approval, crash, resume, verify, rollback ---
+2026-11-21T02:43:27Z | run=demo-crash | actor=blastradius-agent | event=plan_created | result=ok | detail=6 step(s), 1 finding(s) under policy BlastRadius-DeploymentRecovery
+2026-11-21T02:43:28Z | run=demo-crash | actor=blastradius-agent | event=approval_granted | approved_by=operator via --auto-approve (DEMO ONLY) | result=ok | detail=plan of 6 step(s)
+2026-11-21T02:43:28Z | run=demo-crash | actor=blastradius-agent | event=step_started | action=start_instance | resource=i-026b86762912e63de | approved_by=operator via --auto-approve (DEMO ONLY) | result=ok | detail=step s1/6: Start instance checkout-api-2 (i-026b86762912e63de)
+2026-11-21T02:43:28Z | run=demo-crash | actor=blastradius-agent | event=policy_decision | action=ec2:StartInstances | resource=i-026b86762912e63de | approved_by=operator via --auto-approve (DEMO ONLY) | result=allow | detail=allowed by statement 'StartStopServiceInstances'
+2026-11-21T02:43:31Z | run=demo-crash | actor=blastradius-agent | event=step_applied | action=start_instance | resource=i-026b86762912e63de | approved_by=operator via --auto-approve (DEMO ONLY) | result=ok | detail=instance i-026b86762912e63de: stopped -> running
+2026-11-21T02:43:31Z | run=demo-crash | actor=blastradius-agent | event=step_started | action=set_tags | resource=i-026b86762912e63de | approved_by=operator via --auto-approve (DEMO ONLY) | result=ok | detail=step s2/6: Set version tag on checkout-api-2 (i-026b86762912e63de) to 2.0
+2026-11-21T02:43:31Z | run=demo-crash | actor=blastradius-agent | event=policy_decision | action=ec2:CreateTags | resource=i-026b86762912e63de | approved_by=operator via --auto-approve (DEMO ONLY) | result=allow | detail=allowed by statement 'RetagServiceInstances'
+2026-11-21T02:43:34Z | run=demo-crash | actor=blastradius-agent | event=step_applied | action=set_tags | resource=i-026b86762912e63de | approved_by=operator via --auto-approve (DEMO ONLY) | result=ok | detail=tags on i-026b86762912e63de: set {'version': '2.0'} (was {'version': '1.0'})
+2026-11-21T02:43:34Z | run=demo-crash | actor=blastradius-agent | event=step_started | action=health_check | resource=i-026b86762912e63de | approved_by=operator via --auto-approve (DEMO ONLY) | result=ok | detail=step s3/6: Health gate for checkout-api-2 (i-026b86762912e63de): clear health to 'healthy' only if no persistent fault is present
+2026-11-21T02:43:34Z | run=demo-crash | actor=blastradius-agent | event=policy_decision | action=ec2:CreateTags | resource=i-026b86762912e63de | approved_by=operator via --auto-approve (DEMO ONLY) | result=allow | detail=allowed by statement 'RetagServiceInstances'
+2026-11-21T02:43:53Z | run=demo-crash | actor=blastradius-agent | event=step_started | action=health_check | resource=i-026b86762912e63de | approved_by=operator via --auto-approve (DEMO ONLY) | result=ok | detail=step s3/6: Health gate for checkout-api-2 (i-026b86762912e63de): clear health to 'healthy' only if no persistent fault is present
+2026-11-21T02:43:53Z | run=demo-crash | actor=blastradius-agent | event=policy_decision | action=ec2:CreateTags | resource=i-026b86762912e63de | approved_by=operator via --auto-approve (DEMO ONLY) | result=allow | detail=allowed by statement 'RetagServiceInstances'
+2026-11-21T02:43:53Z | run=demo-crash | actor=blastradius-agent | event=step_applied | action=health_check | resource=i-026b86762912e63de | approved_by=operator via --auto-approve (DEMO ONLY) | result=ok | detail=instance i-026b86762912e63de: health 'unknown' -> 'healthy'
+2026-11-21T02:43:53Z | run=demo-crash | actor=blastradius-agent | event=step_started | action=stop_instance | resource=i-76c0230ba6c336a20 | approved_by=operator via --auto-approve (DEMO ONLY) | result=ok | detail=step s4/6: Stop unhealthy instance checkout-api-3 (i-76c0230ba6c336a20) for restart
+2026-11-21T02:43:53Z | run=demo-crash | actor=blastradius-agent | event=policy_decision | action=ec2:StopInstances | resource=i-76c0230ba6c336a20 | approved_by=operator via --auto-approve (DEMO ONLY) | result=allow | detail=allowed by statement 'StartStopServiceInstances'
+2026-11-21T02:43:53Z | run=demo-crash | actor=blastradius-agent | event=step_applied | action=stop_instance | resource=i-76c0230ba6c336a20 | approved_by=operator via --auto-approve (DEMO ONLY) | result=ok | detail=instance i-76c0230ba6c336a20: running -> stopped
+2026-11-21T02:43:53Z | run=demo-crash | actor=blastradius-agent | event=step_started | action=start_instance | resource=i-76c0230ba6c336a20 | approved_by=operator via --auto-approve (DEMO ONLY) | result=ok | detail=step s5/6: Start instance checkout-api-3 (i-76c0230ba6c336a20)
+2026-11-21T02:43:53Z | run=demo-crash | actor=blastradius-agent | event=policy_decision | action=ec2:StartInstances | resource=i-76c0230ba6c336a20 | approved_by=operator via --auto-approve (DEMO ONLY) | result=allow | detail=allowed by statement 'StartStopServiceInstances'
+2026-11-21T02:43:53Z | run=demo-crash | actor=blastradius-agent | event=step_applied | action=start_instance | resource=i-76c0230ba6c336a20 | approved_by=operator via --auto-approve (DEMO ONLY) | result=ok | detail=instance i-76c0230ba6c336a20: stopped -> running
+2026-11-21T02:43:53Z | run=demo-crash | actor=blastradius-agent | event=step_started | action=health_check | resource=i-76c0230ba6c336a20 | approved_by=operator via --auto-approve (DEMO ONLY) | result=ok | detail=step s6/6: Health gate for checkout-api-3 (i-76c0230ba6c336a20): clear health to 'healthy' only if no persistent fault is present
+2026-11-21T02:43:53Z | run=demo-crash | actor=blastradius-agent | event=policy_decision | action=ec2:CreateTags | resource=i-76c0230ba6c336a20 | approved_by=operator via --auto-approve (DEMO ONLY) | result=allow | detail=allowed by statement 'RetagServiceInstances'
+2026-11-21T02:43:53Z | run=demo-crash | actor=blastradius-agent | event=step_applied | action=health_check | resource=i-76c0230ba6c336a20 | approved_by=operator via --auto-approve (DEMO ONLY) | result=health_not_cleared | detail=instance i-76c0230ba6c336a20: persistent fault 'bad-disk' present — health left as 'failed'
+2026-11-21T02:43:53Z | run=demo-crash | actor=blastradius-agent | event=verify_check | result=pass | detail=checkout-api-1 is running: expected running, actual running
+2026-11-21T02:43:53Z | run=demo-crash | actor=blastradius-agent | event=verify_check | result=pass | detail=checkout-api-1 is on version 2.0: expected 2.0, actual 2.0
+2026-11-21T02:43:53Z | run=demo-crash | actor=blastradius-agent | event=verify_check | result=pass | detail=checkout-api-1 is healthy: expected healthy, actual healthy
+2026-11-21T02:43:53Z | run=demo-crash | actor=blastradius-agent | event=verify_check | result=pass | detail=checkout-api-2 is running: expected running, actual running
+2026-11-21T02:43:53Z | run=demo-crash | actor=blastradius-agent | event=verify_check | result=pass | detail=checkout-api-2 is on version 2.0: expected 2.0, actual 2.0
+2026-11-21T02:43:53Z | run=demo-crash | actor=blastradius-agent | event=verify_check | result=pass | detail=checkout-api-2 is healthy: expected healthy, actual healthy
+2026-11-21T02:43:53Z | run=demo-crash | actor=blastradius-agent | event=verify_check | result=pass | detail=checkout-api-3 is running: expected running, actual running
+2026-11-21T02:43:53Z | run=demo-crash | actor=blastradius-agent | event=verify_check | result=pass | detail=checkout-api-3 is on version 2.0: expected 2.0, actual 2.0
+2026-11-21T02:43:53Z | run=demo-crash | actor=blastradius-agent | event=verify_check | result=FAIL | detail=checkout-api-3 is healthy: expected healthy, actual failed
+2026-11-21T02:43:53Z | run=demo-crash | actor=blastradius-agent | event=verify_failed | result=failed | detail=8/9 checks passed
+2026-11-21T02:43:53Z | run=demo-crash | actor=blastradius-agent | event=rollback_step_skipped | result=ok | detail=inverse #6: step had no mutation to undo
+2026-11-21T02:43:53Z | run=demo-crash | actor=blastradius-agent | event=policy_decision | action=ec2:StopInstances | resource=i-76c0230ba6c336a20 | approved_by=operator via --auto-approve (DEMO ONLY) | result=allow | detail=allowed by statement 'StartStopServiceInstances'
+2026-11-21T02:43:53Z | run=demo-crash | actor=blastradius-agent | event=rollback_step | action=stop_instance | resource=i-76c0230ba6c336a20 | approved_by=operator via --auto-approve (DEMO ONLY) | result=ok | detail=instance i-76c0230ba6c336a20: running -> stopped
+2026-11-21T02:43:53Z | run=demo-crash | actor=blastradius-agent | event=policy_decision | action=ec2:StartInstances | resource=i-76c0230ba6c336a20 | approved_by=operator via --auto-approve (DEMO ONLY) | result=allow | detail=allowed by statement 'StartStopServiceInstances'
+2026-11-21T02:43:53Z | run=demo-crash | actor=blastradius-agent | event=rollback_step | action=start_instance | resource=i-76c0230ba6c336a20 | approved_by=operator via --auto-approve (DEMO ONLY) | result=ok | detail=instance i-76c0230ba6c336a20: stopped -> running
+2026-11-21T02:43:53Z | run=demo-crash | actor=blastradius-agent | event=policy_decision | action=ec2:CreateTags | resource=i-026b86762912e63de | approved_by=operator via --auto-approve (DEMO ONLY) | result=allow | detail=allowed by statement 'RetagServiceInstances'
+2026-11-21T02:43:53Z | run=demo-crash | actor=blastradius-agent | event=policy_decision | action=ec2:DeleteTags | resource=i-026b86762912e63de | approved_by=operator via --auto-approve (DEMO ONLY) | result=allow | detail=allowed by statement 'RetagServiceInstances'
+2026-11-21T02:43:53Z | run=demo-crash | actor=blastradius-agent | event=rollback_step | action=restore_tags | resource=i-026b86762912e63de | approved_by=operator via --auto-approve (DEMO ONLY) | result=ok | detail=tags on i-026b86762912e63de restored to {'health': 'unknown'}, removed []
+2026-11-21T02:43:54Z | run=demo-crash | actor=blastradius-agent | event=policy_decision | action=ec2:CreateTags | resource=i-026b86762912e63de | approved_by=operator via --auto-approve (DEMO ONLY) | result=allow | detail=allowed by statement 'RetagServiceInstances'
+2026-11-21T02:43:54Z | run=demo-crash | actor=blastradius-agent | event=policy_decision | action=ec2:DeleteTags | resource=i-026b86762912e63de | approved_by=operator via --auto-approve (DEMO ONLY) | result=allow | detail=allowed by statement 'RetagServiceInstances'
+2026-11-21T02:43:54Z | run=demo-crash | actor=blastradius-agent | event=rollback_step | action=restore_tags | resource=i-026b86762912e63de | approved_by=operator via --auto-approve (DEMO ONLY) | result=ok | detail=tags on i-026b86762912e63de restored to {'version': '1.0'}, removed []
+2026-11-21T02:43:54Z | run=demo-crash | actor=blastradius-agent | event=policy_decision | action=ec2:StopInstances | resource=i-026b86762912e63de | approved_by=operator via --auto-approve (DEMO ONLY) | result=allow | detail=allowed by statement 'StartStopServiceInstances'
+2026-11-21T02:43:54Z | run=demo-crash | actor=blastradius-agent | event=rollback_step | action=stop_instance | resource=i-026b86762912e63de | approved_by=operator via --auto-approve (DEMO ONLY) | result=ok | detail=instance i-026b86762912e63de: running -> stopped
+2026-11-21T02:43:54Z | run=demo-crash | actor=blastradius-agent | event=run_finished | approved_by=operator via --auto-approve (DEMO ONLY) | result=rolled_back | detail=6 step(s) executed
+
+DEMO OK — killed mid-run, resumed from checkpoint, verification failed, full rollback, state identical.
