@@ -10,6 +10,7 @@ who (actor), what (event + AWS action + resource), under whose approval
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -23,6 +24,12 @@ class AuditLog:
         self.path = Path(path)
         self.run_id = run_id
         self.actor = actor
+        # Instance identity for fleet rollups (AgentTrace): which
+        # process of this agent type wrote the record. From the
+        # shared AGENT_INSTANCE env var; "default" when unset. A
+        # resumed run is a new process under the same env, so it
+        # keeps the same instance.
+        self.instance = os.environ.get("AGENT_INSTANCE") or "default"
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
     def log(
@@ -38,6 +45,7 @@ class AuditLog:
             "ts": _now(),
             "run_id": self.run_id,
             "actor": self.actor,
+            "instance": self.instance,
             "event": event,
             "action": action,
             "resource": resource,
